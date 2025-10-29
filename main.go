@@ -86,7 +86,7 @@ func main() {
 			projects.GET("/:project_id", handleGetProjectByID) 
 			projects.DELETE("/:project_id", handleDeleteProject)
 			projects.GET("/:project_id/tasks", handleGetTasks)
-			projects.POST("/:project_id/tasks", handleSaveTasks) // 已新增存在性檢查
+			projects.POST("/:project_id/tasks", handleSaveTasks) 
 		}
 
 		admin := api.Group("/admin")
@@ -94,7 +94,7 @@ func main() {
 		admin.Use(adminAuthMiddleware())
 		{
 			admin.GET("/users", handleGetUsers)
-			admin.POST("/users", handleCreateUser) // 已使用 RETURNING ID
+			admin.POST("/users", handleCreateUser) 
 			admin.DELETE("/users/:id", handleDeleteUser)
 			admin.POST("/clear-all-data", handleClearAllData)
 		}
