@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"os" // 新增: 用於讀取環境變數 (資料庫連線字串)
+	"os"
 	"strconv"
 	"strings"
 
@@ -13,9 +13,8 @@ import (
 )
 
 // --- 雙資料庫變數 ---
-// 注意: 在部署時，這些將分別連線到不同的 CockroachDB 實例或資料庫。
-var userDB *sql.DB    // 用於 users 資料表 (連線字串來自 USER_DB_URL)
-var projectDB *sql.DB // 用於 projects 和 tasks 資料表 (連線字串來自 PROJECT_DB_URL)
+var userDB *sql.DB    
+var projectDB *sql.DB 
 
 // --- 資料庫模型 (Structs) ---
 type Task struct {
@@ -82,8 +81,8 @@ func main() {
 		projects.Use(authMiddleware())
 		{
 			projects.GET("", handleGetProjects)
-			projects.POST("", handleCreateProject)
-			projects.GET("/:project_id", handleGetProjectByID) // 取得單一專案名稱用
+			projects.POST("", handleCreateProject) // <-- 已修改
+			projects.GET("/:project_id", handleGetProjectByID) 
 			projects.DELETE("/:project_id", handleDeleteProject)
 			projects.GET("/:project_id/tasks", handleGetTasks)
 			projects.POST("/:project_id/tasks", handleSaveTasks)
@@ -94,7 +93,7 @@ func main() {
 		admin.Use(adminAuthMiddleware())
 		{
 			admin.GET("/users", handleGetUsers)
-			admin.POST("/users", handleCreateUser)
+			admin.POST("/users", handleCreateUser) // <-- 已修改
 			admin.DELETE("/users/:id", handleDeleteUser)
 			admin.POST("/clear-all-data", handleClearAllData)
 		}
@@ -134,7 +133,7 @@ func connectDB(envVar string) *sql.DB {
 }
 
 func initUserDB() {
-	userDB = connectDB("USER_DB_URL") // 連線到 USER DB
+	userDB = connectDB("USER_DB_URL") 
 
 	// users 資料表 (使用 SERIAL PRIMARY KEY，符合 Postgres/CRDB 習慣)
 	createUsersTable := `
@@ -163,7 +162,7 @@ func initUserDB() {
 }
 
 func initProjectDB() {
-	projectDB = connectDB("PROJECT_DB_URL") // 連線到 PROJECT DB
+	projectDB = connectDB("PROJECT_DB_URL") 
 
 	// projects 資料表 (使用 SERIAL PRIMARY KEY)
 	createProjectsTable := `
@@ -326,38 +325,27 @@ func handleSaveTasks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// 處理 "建立新專案" (使用 $1, $2)
+// 處理 "建立新專案" (使用 projectDB) - **已修復使用 RETURNING ID**
 func handleCreateProject(c *gin.Context) {
 	var req ProjectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "無效的請求: " + err.Error()})
 		return
 	}
-	// SQL 語句變更: 使用 $1, $2
-	stmt, err := projectDB.Prepare("INSERT INTO projects (name, department) VALUES ($1, $2)")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "資料庫準備失敗: " + err.Error()})
-		return
-	}
-	defer stmt.Close()
-	// 在 PostgreSQL/CockroachDB 中，使用 `RETURNING id` 是獲取新 ID 的更標準方式，
-	// 但 `LastInsertId()` 在某些驅動上仍可運作。為了與原始邏輯一致，我們先保持。
-	result, err := stmt.Exec(req.Name, req.Department)
+	
+    var newID int
+	// 使用 INSERT ... RETURNING id
+	query := "INSERT INTO projects (name, department) VALUES ($1, $2) RETURNING id"
+    
+    // 使用 QueryRow 執行 INSERT 並將返回的 id 掃描到 newID 變數中
+	err := projectDB.QueryRow(query, req.Name, req.Department).Scan(&newID)
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "資料庫執行失敗: " + err.Error()})
 		return
 	}
-	newID, err := result.LastInsertId()
-	if err != nil {
-		// CockroachDB/Postgres 的 LastInsertId 可能會失敗，標準做法是改用 QueryRow 或 RETURNING
-		log.Println("WARNING: LastInsertId 可能不適用於 CockroachDB/Postgres，請考慮使用 RETURNING 語法。")
-		// 這裡為了保持與原程式碼的最小變動性，暫時保留。
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "無法取得新專案 ID: " + err.Error()})
-		return
-	}
-	newProject := Project{ID: int(newID), Name: req.Name, Department: req.Department}
+    
+	newProject := Project{ID: newID, Name: req.Name, Department: req.Department}
 	c.JSON(http.StatusCreated, newProject)
 }
 
@@ -394,21 +382,21 @@ func handleGetUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, users)
 }
 
-// 處理 "建立新使用者" (使用 $1 到 $5)
+// 處理 "建立新使用者" (使用 userDB) - **已修復使用 RETURNING ID**
 func handleCreateUser(c *gin.Context) {
 	var req CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "無效的請求: " + err.Error()})
 		return
 	}
-	// SQL 語句變更: 使用 $1 到 $5
-	stmt, err := userDB.Prepare("INSERT INTO users (username, password, name, department, is_admin) VALUES ($1, $2, $3, $4, $5)")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "資料庫準備失敗: " + err.Error()})
-		return
-	}
-	defer stmt.Close()
-	result, err := stmt.Exec(req.Username, req.Password, req.Name, req.Department, req.IsAdmin)
+	
+    var newID int
+	// 使用 INSERT ... RETURNING id
+    query := "INSERT INTO users (username, password, name, department, is_admin) VALUES ($1, $2, $3, $4, $5) RETURNING id"
+    
+    // 使用 QueryRow 執行 INSERT 並將返回的 id 掃描到 newID 變數中
+	err := userDB.QueryRow(query, req.Username, req.Password, req.Name, req.Department, req.IsAdmin).Scan(&newID)
+
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key value") { // Postgres/CRDB 的 UNIQUE 錯誤訊息
 			c.JSON(http.StatusConflict, gin.H{"error": "此使用者名稱已被註冊"})
@@ -417,12 +405,8 @@ func handleCreateUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "資料庫執行失敗: " + err.Error()})
 		return
 	}
-	newID, err := result.LastInsertId()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "無法取得新使用者 ID: " + err.Error()})
-		return
-	}
-	newUser := User{ID: int(newID), Username: req.Username, Name: req.Name, Department: req.Department, IsAdmin: req.IsAdmin}
+    
+	newUser := User{ID: newID, Username: req.Username, Name: req.Name, Department: req.Department, IsAdmin: req.IsAdmin}
 	c.JSON(http.StatusCreated, newUser)
 }
 
