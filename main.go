@@ -341,6 +341,7 @@ func handleSaveTasks(c *gin.Context) {
 }
 
 // 處理 "建立新專案" (已修復使用 RETURNING ID)
+// 處理 "建立新專案" (使用 projectDB) - 最終修正版
 func handleCreateProject(c *gin.Context) {
 	var req ProjectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -349,18 +350,23 @@ func handleCreateProject(c *gin.Context) {
 	}
 	
     var newID int
-	// 使用 INSERT ... RETURNING id
+	// 【修正】: 移除 stmt.Exec 和 LastInsertId，完全使用 QueryRow + RETURNING
 	query := "INSERT INTO projects (name, department) VALUES ($1, $2) RETURNING id"
     
-    // 使用 QueryRow 執行 INSERT 並將返回的 id 掃描到 newID 變數中
+    // 使用 QueryRow 執行 INSERT，並將返回的 id 掃描到 newID 變數中
 	err := projectDB.QueryRow(query, req.Name, req.Department).Scan(&newID)
 
 	if err != nil {
+		log.Printf("ERROR: handleCreateProject 執行失敗: %v", err) // 新增日誌
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "資料庫執行失敗: " + err.Error()})
 		return
 	}
     
+	// 成功取得新 ID (此 ID 為 CRDB 分配的唯一 ID)
 	newProject := Project{ID: newID, Name: req.Name, Department: req.Department}
+	
+    // 確認 ID 是有效值後再回傳 (選用，但有助於偵錯)
+    log.Printf("INFO: 成功創建專案 ID: %d", newID) 
 	c.JSON(http.StatusCreated, newProject)
 }
 
