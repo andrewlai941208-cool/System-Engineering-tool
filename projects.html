@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>選擇專案</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #f7f7f7; }
+        .project-card:hover { transform: translateY(-5px); box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1); }
+    </style>
+</head>
+<body class="p-8">
+    <div class="max-w-6xl mx-auto">
+        <header class="flex justify-between items-center mb-8 relative">
+            <h1 class="text-4xl font-bold text-gray-800">選擇專案</h1>
+            
+            <div class="absolute top-0 left-0 -translate-y-8" id="admin-link-container">
+                </div>
+            
+            <button onclick="logout()" class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition duration-150">
+                登出
+            </button>
+        </header>
+
+        <div class="mb-8 p-6 bg-white rounded-xl shadow-md border border-gray-200">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">新增專案</h2>
+            <form id="createProjectForm" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <input type="text" id="newProjectName" placeholder="新專案名稱" required 
+                       class="md:col-span-2 p-3 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500">
+                
+                <input type="text" id="newProjectDept" placeholder="所屬部門 (例如: R&D)" required 
+                       class="p-3 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500">
+                
+                <button type="submit" 
+                        class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-150">
+                    建立專案
+                </button>
+            </form>
+            <p id="createError" class="text-sm text-red-600 mt-2 h-5"></p>
+        </div>
+
+
+        <div id="loading" class="text-center text-lg text-gray-600">正在載入專案...</div>
+        
+        <div id="projectList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            </div>
+    </div>
+
+    <script>
+        const token = localStorage.getItem('authToken');
+        const isAdmin = localStorage.getItem('isAdmin'); 
+        const projectList = document.getElementById('projectList');
+        const loading = document.getElementById('loading');
+        const createProjectForm = document.getElementById('createProjectForm');
+        const createError = document.getElementById('createError');
+        const newProjectNameInput = document.getElementById('newProjectName');
+        const newProjectDeptInput = document.getElementById('newProjectDept');
+
+        // 登出
+        function logout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('isAdmin'); 
+            window.location.href = '/';
+        }
+
+        // 檢查 Token
+        if (!token) {
+            logout();
+        }
+
+        // fetch 輔助函數 (傳送 Token)
+        async function fetchWithAuth(url, options = {}) {
+            const headers = {
+                ...options.headers,
+                'Authorization': `Bearer ${token}`
+            };
+
+            if (options.body && !(options.body instanceof FormData)) {
+                headers['Content-Type'] = 'application/json';
+            }
+            
+            const response = await fetch(url, { ...options, headers });
+
+            if (response.status === 401 || response.status === 403) {
+                logout(); // Token 無效或權限不足
+                throw new Error('Unauthorized/Forbidden');
+            }
+            return response;
+        }
+
+
+        // 載入專案
+        async function loadProjects() {
+            try {
+                projectList.innerHTML = ''; 
+                loading.style.display = 'block';
+
+                const response = await fetchWithAuth('/api/projects');
+                if (!response.ok) {
+                    throw new Error('無法載入專案');
+                }
+                
+                const projects = await response.json();
+                loading.style.display = 'none';
+
+                if (projects.length === 0) {
+                    projectList.innerHTML = '<p class="text-gray-500 col-span-full text-center">您目前沒有被分配任何專案。</p>';
+                    return;
+                }
+
+                projects.forEach(project => {
+                    // *** 1. 修改：卡片改為 'a' 標籤並新增 'relative' ***
+                    const card = document.createElement('a');
+                    card.href = `/gantt?project_id=${project.id}`;
+                    card.className = 'project-card bg-white p-6 rounded-xl shadow-md border border-gray-200 transition-all duration-300 block relative';
+                    
+                    card.innerHTML = `
+                        <button 
+                            onclick="deleteProject(event, ${project.id}, '${project.name}')" 
+                            class="absolute top-3 right-3 p-1.5 rounded-full text-gray-400 hover:bg-red-100 hover:text-red-600 transition-colors z-10"
+                            title="刪除專案">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                        
+                        <h2 class="text-2xl font-bold text-indigo-700 mb-2">${project.name}</h2>
+                        <p class="text-gray-600">部門: ${project.department}</p>
+                    `;
+                    projectList.appendChild(card);
+                });
+
+            } catch (error) {
+                loading.textContent = `錯誤: ${error.message}`;
+            }
+        }
+
+        // 建立專案
+        createProjectForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            createError.textContent = '';
+            const name = newProjectNameInput.value;
+            const department = newProjectDeptInput.value;
+            
+            if (!name || !department) {
+                createError.textContent = '請填寫所有欄位。';
+                return;
+            }
+            
+            try {
+                const response = await fetchWithAuth('/api/projects', {
+                    method: 'POST',
+                    body: JSON.stringify({ name, department })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || '建立失敗');
+                }
+                
+                newProjectNameInput.value = '';
+                newProjectDeptInput.value = '';
+                await loadProjects(); // 成功後重新載入
+
+            } catch (error) {
+                createError.textContent = `錯誤: ${error.message}`;
+            }
+        });
+
+        // *** 2. 新增：刪除專案的函數 ***
+        async function deleteProject(event, id, name) {
+            // 阻止 'a' 標籤的預設導航行為
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (!window.confirm(`您確定要永久刪除專案 "${name}" 嗎？\n\n**警告：** 該專案下的所有任務將被一併刪除！`)) {
+                return;
+            }
+
+            try {
+                const response = await fetchWithAuth(`/api/projects/${id}`, {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.error || '刪除失敗');
+                }
+
+                // 成功，重新載入專案列表
+                await loadProjects();
+
+            } catch (error) {
+                alert(`刪除失敗: ${error.message}`);
+                console.error("Delete project failed:", error);
+            }
+        }
+
+
+        // 頁面初次載入時
+        window.onload = () => {
+            if (isAdmin === '1') {
+                const container = document.getElementById('admin-link-container');
+                container.innerHTML = `<a href="/admin" class="text-indigo-600 hover:text-indigo-800 font-semibold">
+                    &rarr; 前往後台管理
+                </a>`;
+            }
+            loadProjects();
+        };
+    </script>
+</body>
+</html>

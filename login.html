@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登入</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #f3f4f6; }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen">
+
+    <div class="w-full max-w-md p-8 bg-white rounded-xl shadow-lg border border-gray-200">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6">專案系統</h1>
+        
+        <form id="loginForm">
+            <div class="mb-4">
+                <label for="username" class="block text-sm font-medium text-gray-700">使用者名稱</label>
+                <input type="text" id="username" value="" required class="mt-1 p-3 block w-full border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500">
+            </div>
+            
+            <div class="mb-6">
+                <label for="password" class="block text-sm font-medium text-gray-700">密碼</label>
+                 <input type="password" id="password" value="" required class="mt-1 p-3 block w-full border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500">
+            </div>
+            
+            <p id="errorMessage" class="text-sm text-red-600 mb-4 h-5"></p>
+
+            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-150 text-base">
+                登入
+            </button>
+        </form>
+    </div>
+
+    <script>
+        // 檢查是否已登入
+        if (localStorage.getItem('authToken')) {
+            // *** 修改：檢查是否為管理員，導向不同頁面 ***
+            if (localStorage.getItem('isAdmin') === '1') {
+                window.location.href = '/admin';
+            } else {
+                window.location.href = '/projects';
+            }
+        }
+
+        const loginForm = document.getElementById('loginForm');
+        const errorMessage = document.getElementById('errorMessage');
+
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            errorMessage.textContent = '';
+            
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || '登入失敗');
+                }
+
+                const data = await response.json();
+                
+                // *** 修改：儲存 token (username) 和 is_admin 狀態 ***
+                localStorage.setItem('authToken', data.token);
+                localStorage.setItem('isAdmin', data.user.is_admin);
+                
+                // *** 修改：根據 is_admin 導向 ***
+                if (data.user.is_admin === 1) {
+                    window.location.href = '/admin';
+                } else {
+                    window.location.href = '/projects';
+                }
+
+            } catch (error) {
+                errorMessage.textContent = error.message;
+            }
+        });
+    </script>
+</body>
+</html>

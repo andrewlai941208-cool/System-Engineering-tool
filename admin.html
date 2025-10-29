@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>後台管理</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #f7f7f7; }
+        .card { box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1); }
+    </style>
+</head>
+<body class="p-8">
+    <div class="max-w-6xl mx-auto">
+        
+        <header class="flex justify-between items-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-800">後台管理</h1>
+            <div class="space-x-4">
+                <button onclick="logout()" class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition duration-150">
+                    登出
+                </button>
+            </div>
+        </header>
+
+        <section class="card bg-white rounded-xl p-6 mb-8">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">新增使用者</h2>
+            <form id="createUserForm">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                    <input type="text" id="newUsername" placeholder="使用者名稱 (Username)" required class="p-3 border rounded-md focus:ring-indigo-500 focus:border-indigo-500">
+                    <input type="password" id="newPassword" placeholder="密碼 (Password)" required class="p-3 border rounded-md focus:ring-indigo-500 focus:border-indigo-500">
+                    <input type="text" id="newName" placeholder="姓名 (Name)" class="p-3 border rounded-md">
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <input type="text" id="newDepartment" placeholder="部門 (Department)" class="p-3 border rounded-md">
+                    <select id="newIsAdmin" class="p-3 border rounded-md bg-white">
+                        <option value="0">一般使用者 (User)</option>
+                        <option value="1" selected>管理員 (Admin)</option>
+                    </select>
+                    <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-150">
+                        建立帳號
+                    </button>
+                </div>
+            </form>
+            <p id="createError" class="text-sm text-red-600 mt-2 h-5"></p>
+        </section>
+
+        <main class="card bg-white rounded-xl p-6 mb-8">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">使用者管理</h2>
+            <p id="userStatus" class="text-gray-600 mb-4">載入中...</p>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">序號</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Username</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Department</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="user-list" class="bg-white divide-y divide-gray-200">
+                        </tbody>
+                </table>
+            </div>
+        </main>
+
+        <section class="card bg-white rounded-xl p-6 border-4 border-red-500">
+             <h2 class="text-2xl font-bold text-red-700 mb-4">危險區域</h2>
+             <p class="text-gray-700 mb-4">
+                此操作將**永久刪除所有專案、所有任務和所有使用者**（除了預設的 'admin' 帳號）。此操作無法復原。
+             </p>
+             <p id="clearDataError" class="text-red-600 font-semibold h-5 mb-2"></p>
+             <button onclick="clearAllData()" class="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-lg transition duration-150">
+                清空所有資料
+             </button>
+        </section>
+    </div>
+
+    <script>
+        const token = localStorage.getItem('authToken');
+        const isAdmin = localStorage.getItem('isAdmin');
+        const userList = document.getElementById('user-list');
+        const userStatus = document.getElementById('userStatus');
+        const createUserForm = document.getElementById('createUserForm');
+        const createError = document.getElementById('createError');
+        const clearDataError = document.getElementById('clearDataError');
+
+        // 登出
+        function logout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('isAdmin');
+            window.location.href = '/';
+        }
+
+        // 權限檢查
+        if (isAdmin !== '1' || !token) {
+            logout();
+        }
+
+        // fetch 輔助函數
+        async function fetchWithAuth(url, options = {}) {
+            const headers = {
+                ...options.headers,
+                'Authorization': `Bearer ${token}`
+            };
+            if (options.body && !(options.body instanceof FormData)) {
+                headers['Content-Type'] = 'application/json';
+            }
+            const response = await fetch(url, { ...options, headers });
+            if (response.status === 401 || response.status === 403) {
+                logout(); 
+                throw new Error('Unauthorized/Forbidden');
+            }
+            return response;
+        }
+
+        // 載入使用者列表
+        async function loadUsers() {
+            try {
+                userStatus.textContent = '正在載入使用者列表...';
+                userList.innerHTML = '';
+                
+                const response = await fetchWithAuth('/api/admin/users');
+                if (!response.ok) throw new Error('無法載入使用者');
+                
+                const users = await response.json();
+
+                if (users.length === 0) {
+                    userStatus.textContent = '資料庫中沒有使用者。';
+                    return;
+                }
+                userStatus.textContent = `共 ${users.length} 位使用者。`;
+
+                // *** 2. 修改：加入 index 參數 ***
+                users.forEach((user, index) => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${index + 1}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${user.username}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${user.name}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${user.department}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm">
+                            ${user.is_admin === 1 ? 
+                                '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-indigo-100 text-indigo-800">Admin</span>' : 
+                                '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">User</span>'}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                            ${user.id === 1 ? 
+                                '<span class="text-gray-400">N/A</span>' : 
+                                `<button onclick="deleteUser(${user.id}, '${user.username}')" class="text-red-600 hover:text-red-900">刪除</button>`}
+                        </td>
+                    `;
+                    userList.appendChild(tr);
+                });
+
+            } catch (error) {
+                userStatus.textContent = `錯誤: ${error.message}`;
+            }
+        }
+
+        // 刪除使用者
+        async function deleteUser(id, username) {
+            if (id === 1) {
+                alert("無法刪除主要的 'admin' 帳號 (ID: 1)。");
+                return;
+            }
+            // *** 刪除時，我們顯示 username，而不是 ID，避免混淆 ***
+            if (!window.confirm(`您確定要永久刪除使用者 '${username}' 嗎？`)) {
+                return;
+            }
+            
+            try {
+                // *** 刪除 API 仍然使用真實的 ID ***
+                const response = await fetchWithAuth(`/api/admin/users/${id}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.error || '刪除失敗');
+                }
+                await loadUsers(); // 成功，重新載入列表
+
+            } catch (error) {
+                alert(`刪除失敗: ${error.message}`);
+            }
+        }
+
+        // 清空所有資料
+        async function clearAllData() {
+            clearDataError.textContent = '';
+            
+            const confirmation1 = prompt("危險操作：您即將刪除所有專案、任務和使用者。\n\n若要繼續，請輸入 'DELETE'：");
+            if (confirmation1 !== 'DELETE') {
+                clearDataError.textContent = '操作已取消。';
+                return;
+            }
+            if (!window.confirm("這是最後一次確認！所有資料將被清除 (admin 帳號除外)。\n\n確定嗎？")) {
+                clearDataError.textContent = '操作已取消。';
+                return;
+            }
+
+            try {
+                const response = await fetchWithAuth('/api/admin/clear-all-data', {
+                    method: 'POST'
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.error || '清除失敗');
+                }
+
+                const result = await response.json();
+                alert(`成功: ${result.status}\n\n您將被登出。`);
+                logout(); 
+
+            } catch (error) {
+                 clearDataError.textContent = `清除失敗: ${error.message}`;
+            }
+        }
+        
+        // 建立使用者
+        createUserForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            createError.textContent = '';
+
+            const username = document.getElementById('newUsername').value;
+            const password = document.getElementById('newPassword').value;
+            const name = document.getElementById('newName').value;
+            const department = document.getElementById('newDepartment').value;
+            const isAdmin = parseInt(document.getElementById('newIsAdmin').value, 10); 
+
+            if (!username || !password) {
+                createError.textContent = '使用者名稱和密碼為必填項。';
+                return;
+            }
+            
+            try {
+                const response = await fetchWithAuth('/api/admin/users', {
+                    method: 'POST',
+                    body: JSON.stringify({ username, password, name, department, is_admin: isAdmin })
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.error || '建立失敗');
+                }
+
+                createError.textContent = '';
+                createUserForm.reset(); 
+                document.getElementById('newIsAdmin').value = '1'; // 重設 select
+                
+                await loadUsers(); // 重新載入列表
+
+            } catch (error) {
+                createError.textContent = `建立失敗: ${error.message}`;
+            }
+        });
+
+        // 頁面載入時，執行
+        window.onload = loadUsers;
+    </script>
+</body>
+</html>
