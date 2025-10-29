@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"os"
+	"os" // 新增: 用於讀取環境變數 (資料庫連線字串)
 	"strconv"
 	"strings"
 
@@ -13,8 +13,9 @@ import (
 )
 
 // --- 雙資料庫變數 ---
-var userDB *sql.DB    
-var projectDB *sql.DB 
+// 變數將透過環境變數連線到 CockroachDB 的不同資料庫或 Schema。
+var userDB *sql.DB    // 用於 users 資料表 (連線字串來自 USER_DB_URL)
+var projectDB *sql.DB // 用於 projects 和 tasks 資料表 (連線字串來自 PROJECT_DB_URL)
 
 // --- 資料庫模型 (Structs) ---
 type Task struct {
@@ -81,11 +82,11 @@ func main() {
 		projects.Use(authMiddleware())
 		{
 			projects.GET("", handleGetProjects)
-			projects.POST("", handleCreateProject) // <-- 已修改
+			projects.POST("", handleCreateProject) 
 			projects.GET("/:project_id", handleGetProjectByID) 
 			projects.DELETE("/:project_id", handleDeleteProject)
 			projects.GET("/:project_id/tasks", handleGetTasks)
-			projects.POST("/:project_id/tasks", handleSaveTasks)
+			projects.POST("/:project_id/tasks", handleSaveTasks) // 已新增存在性檢查
 		}
 
 		admin := api.Group("/admin")
@@ -93,7 +94,7 @@ func main() {
 		admin.Use(adminAuthMiddleware())
 		{
 			admin.GET("/users", handleGetUsers)
-			admin.POST("/users", handleCreateUser) // <-- 已修改
+			admin.POST("/users", handleCreateUser) // 已使用 RETURNING ID
 			admin.DELETE("/users/:id", handleDeleteUser)
 			admin.POST("/clear-all-data", handleClearAllData)
 		}
@@ -101,7 +102,7 @@ func main() {
 
 	// 4. 啟動伺服器
 	log.Println("伺服器啟動於 http://localhost:8080")
-	log.Println("資料庫連線字串請透過環境變數 USER_DB_URL 和 PROJECT_DB_URL 設定。")
+	log.Println("【重要】資料庫連線字串請透過環境變數 USER_DB_URL 和 PROJECT_DB_URL 設定。")
 	router.Run(":8080")
 }
 
@@ -135,7 +136,7 @@ func connectDB(envVar string) *sql.DB {
 func initUserDB() {
 	userDB = connectDB("USER_DB_URL") 
 
-	// users 資料表 (使用 SERIAL PRIMARY KEY，符合 Postgres/CRDB 習慣)
+	// users 資料表 (使用 SERIAL PRIMARY KEY)
 	createUsersTable := `
     CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -150,7 +151,7 @@ func initUserDB() {
 		log.Fatal("無法建立 users 資料表: ", err)
 	}
 
-	// 插入預設帳號 (ON CONFLICT DO NOTHING 適用於 Postgres/CRDB)
+	// 插入預設帳號
 	_, err = userDB.Exec(`
         INSERT INTO users (username, password, name, department, is_admin) 
         VALUES ('admin', 'admin', 'Site Admin', 'IT', 1) 
@@ -205,7 +206,6 @@ func handleLogin(c *gin.Context) {
 		return
 	}
 	var user User
-	// SQL 語句變更: 使用 $1, $2
 	err := userDB.QueryRow("SELECT id, username, name, department, is_admin FROM users WHERE username = $1 AND password = $2", req.Username, req.Password).Scan(&user.ID, &user.Username, &user.Name, &user.Department, &user.IsAdmin)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "使用者名稱或密碼錯誤"})
@@ -218,7 +218,7 @@ func handleLogin(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"token": user.Username, "user": user})
 }
 
-// 處理 "取得所有專案" (無預留位置，不變)
+// 處理 "取得所有專案" 
 func handleGetProjects(c *gin.Context) {
 	rows, err := projectDB.Query("SELECT id, name, department FROM projects")
 	if err != nil {
@@ -241,7 +241,6 @@ func handleGetProjects(c *gin.Context) {
 func handleGetProjectByID(c *gin.Context) {
 	projectID := c.Param("project_id")
 	var project Project
-	// SQL 語句變更: 使用 $1
 	err := projectDB.QueryRow("SELECT id, name, department FROM projects WHERE id = $1", projectID).Scan(&project.ID, &project.Name, &project.Department)
 
 	if err == sql.ErrNoRows {
@@ -259,7 +258,6 @@ func handleGetProjectByID(c *gin.Context) {
 // 處理 "取得特定專案的任務" (使用 $1)
 func handleGetTasks(c *gin.Context) {
 	projectID := c.Param("project_id")
-	// SQL 語句變更: 使用 $1
 	rows, err := projectDB.Query("SELECT id, name, start, durationdays, priority FROM tasks WHERE project_id = $1 ORDER BY id ASC", projectID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "無法查詢任務"})
@@ -277,7 +275,7 @@ func handleGetTasks(c *gin.Context) {
 	c.JSON(http.StatusOK, tasks)
 }
 
-// 處理 "儲存(覆蓋)特定專案的所有任務" (使用 $1 到 $6)
+// 處理 "儲存(覆蓋)特定專案的所有任務" (已新增專案存在性檢查)
 func handleSaveTasks(c *gin.Context) {
 	projectIDStr := c.Param("project_id")
 	projectID, err := strconv.Atoi(projectIDStr)
@@ -285,24 +283,41 @@ func handleSaveTasks(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "無效的專案 ID"})
 		return
 	}
+
+    // --- 檢查專案是否存在 (防止外鍵錯誤) ---
+    var existsID int
+    err = projectDB.QueryRow("SELECT id FROM projects WHERE id = $1", projectID).Scan(&existsID)
+    
+    if err == sql.ErrNoRows {
+        c.JSON(http.StatusNotFound, gin.H{"error": "專案 ID 不存在，無法儲存任務"})
+        return
+    }
+    if err != nil {
+        log.Printf("ERROR: 檢查專案存在性失敗: %v", err)
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "檢查專案存在性時發生資料庫錯誤"})
+        return
+    }
+    // ----------------------------------------
+
 	var tasks []Task
 	if err := c.ShouldBindJSON(&tasks); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "無效的任務資料格式"})
 		return
 	}
+
 	tx, err := projectDB.Begin()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "無法啟動交易"})
 		return
 	}
-	// SQL 語句變更: 使用 $1 (DELETE)
+	
 	_, err = tx.Exec("DELETE FROM tasks WHERE project_id = $1", projectID)
 	if err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "刪除舊任務失敗"})
 		return
 	}
-	// SQL 語句變更: 使用 $1 到 $6 (INSERT)
+	
 	stmt, err := tx.Prepare("INSERT INTO tasks (id, name, start, durationdays, priority, project_id) VALUES ($1, $2, $3, $4, $5, $6)")
 	if err != nil {
 		tx.Rollback()
@@ -325,7 +340,7 @@ func handleSaveTasks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// 處理 "建立新專案" (使用 projectDB) - **已修復使用 RETURNING ID**
+// 處理 "建立新專案" (已修復使用 RETURNING ID)
 func handleCreateProject(c *gin.Context) {
 	var req ProjectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -352,7 +367,6 @@ func handleCreateProject(c *gin.Context) {
 // 處理 "刪除專案" (使用 $1)
 func handleDeleteProject(c *gin.Context) {
 	projectID := c.Param("project_id")
-	// SQL 語句變更: 使用 $1
 	_, err := projectDB.Exec("DELETE FROM projects WHERE id = $1", projectID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "刪除專案失敗: " + err.Error()})
@@ -363,7 +377,7 @@ func handleDeleteProject(c *gin.Context) {
 
 // --- 以下為管理員 API Handlers ---
 
-// 處理 "取得所有使用者" (無預留位置，不變)
+// 處理 "取得所有使用者" 
 func handleGetUsers(c *gin.Context) {
 	rows, err := userDB.Query("SELECT id, username, name, department, is_admin FROM users")
 	if err != nil {
@@ -382,7 +396,7 @@ func handleGetUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, users)
 }
 
-// 處理 "建立新使用者" (使用 userDB) - **已修復使用 RETURNING ID**
+// 處理 "建立新使用者" (已修復使用 RETURNING ID)
 func handleCreateUser(c *gin.Context) {
 	var req CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -398,7 +412,8 @@ func handleCreateUser(c *gin.Context) {
 	err := userDB.QueryRow(query, req.Username, req.Password, req.Name, req.Department, req.IsAdmin).Scan(&newID)
 
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key value") { // Postgres/CRDB 的 UNIQUE 錯誤訊息
+		// 檢查唯一性約束錯誤
+		if strings.Contains(err.Error(), "duplicate key value") { 
 			c.JSON(http.StatusConflict, gin.H{"error": "此使用者名稱已被註冊"})
 			return
 		}
@@ -417,7 +432,6 @@ func handleDeleteUser(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "無法刪除主要的管理員帳號"})
 		return
 	}
-	// SQL 語句變更: 使用 $1
 	_, err := userDB.Exec("DELETE FROM users WHERE id = $1", userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "刪除使用者失敗: " + err.Error()})
@@ -426,7 +440,7 @@ func handleDeleteUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// 處理 "清除所有資料" (無預留位置，不變)
+// 處理 "清除所有資料" 
 func handleClearAllData(c *gin.Context) {
 
 	// 1. 清除 Project DB
@@ -435,14 +449,14 @@ func handleClearAllData(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "無法啟動 projectDB 交易"})
 		return
 	}
-	// 無預留位置
+	
 	_, err = projectTx.Exec("DELETE FROM tasks")
 	if err != nil {
 		projectTx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "刪除 tasks 失敗"})
 		return
 	}
-	// 無預留位置
+	
 	_, err = projectTx.Exec("DELETE FROM projects")
 	if err != nil {
 		projectTx.Rollback()
@@ -460,14 +474,14 @@ func handleClearAllData(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "無法啟動 userDB 交易"})
 		return
 	}
-	// 無預留位置
+	
 	_, err = userTx.Exec("DELETE FROM users")
 	if err != nil {
 		userTx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "刪除 users 失敗"})
 		return
 	}
-	// 重新插入預設的管理員帳號 (Postgres/CRDB 語法)
+	// 重新插入預設的管理員帳號 
 	_, err = userTx.Exec(`
         INSERT INTO users (username, password, name, department, is_admin) 
         VALUES ('admin', 'admin', 'Site Admin', 'IT', 1) 
