@@ -82,11 +82,11 @@ func main() {
 		projects.Use(authMiddleware())
 		{
 			projects.GET("", handleGetProjects)
-			projects.POST("", handleCreateProject) 
-			projects.GET("/:project_id", handleGetProjectByID) 
+			projects.POST("", handleCreateProject)
+			projects.GET("/:project_id", handleGetProjectByID)
 			projects.DELETE("/:project_id", handleDeleteProject)
 			projects.GET("/:project_id/tasks", handleGetTasks)
-			projects.POST("/:project_id/tasks", handleSaveTasks) 
+			projects.POST("/:project_id/tasks", handleSaveTasks)
 		}
 
 		admin := api.Group("/admin")
@@ -94,7 +94,7 @@ func main() {
 		admin.Use(adminAuthMiddleware())
 		{
 			admin.GET("/users", handleGetUsers)
-			admin.POST("/users", handleCreateUser) 
+			admin.POST("/users", handleCreateUser)
 			admin.DELETE("/users/:id", handleDeleteUser)
 			admin.POST("/clear-all-data", handleClearAllData)
 		}
@@ -134,7 +134,7 @@ func connectDB(envVar string) *sql.DB {
 }
 
 func initUserDB() {
-	userDB = connectDB("USER_DB_URL") 
+	userDB = connectDB("USER_DB_URL")
 
 	// users 資料表 (使用 SERIAL PRIMARY KEY)
 	createUsersTable := `
@@ -163,7 +163,7 @@ func initUserDB() {
 }
 
 func initProjectDB() {
-	projectDB = connectDB("PROJECT_DB_URL") 
+	projectDB = connectDB("PROJECT_DB_URL")
 
 	// projects 資料表 (使用 SERIAL PRIMARY KEY)
 	createProjectsTable := `
@@ -218,7 +218,7 @@ func handleLogin(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"token": user.Username, "user": user})
 }
 
-// 處理 "取得所有專案" 
+// 處理 "取得所有專案"
 func handleGetProjects(c *gin.Context) {
 	rows, err := projectDB.Query("SELECT id, name, department FROM projects")
 	if err != nil {
@@ -284,20 +284,20 @@ func handleSaveTasks(c *gin.Context) {
 		return
 	}
 
-    // --- 檢查專案是否存在 (防止外鍵錯誤) ---
-    var existsID int
-    err = projectDB.QueryRow("SELECT id FROM projects WHERE id = $1", projectID).Scan(&existsID)
-    
-    if err == sql.ErrNoRows {
-        c.JSON(http.StatusNotFound, gin.H{"error": "專案 ID 不存在，無法儲存任務"})
-        return
-    }
-    if err != nil {
-        log.Printf("ERROR: 檢查專案存在性失敗: %v", err)
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "檢查專案存在性時發生資料庫錯誤"})
-        return
-    }
-    // ----------------------------------------
+	// --- 檢查專案是否存在 (防止外鍵錯誤) ---
+	var existsID int
+	err = projectDB.QueryRow("SELECT id FROM projects WHERE id = $1", projectID).Scan(&existsID)
+
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "專案 ID 不存在，無法儲存任務"})
+		return
+	}
+	if err != nil {
+		log.Printf("ERROR: 檢查專案存在性失敗: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "檢查專案存在性時發生資料庫錯誤"})
+		return
+	}
+	// ----------------------------------------
 
 	var tasks []Task
 	if err := c.ShouldBindJSON(&tasks); err != nil {
@@ -310,14 +310,14 @@ func handleSaveTasks(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "無法啟動交易"})
 		return
 	}
-	
+
 	_, err = tx.Exec("DELETE FROM tasks WHERE project_id = $1", projectID)
 	if err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "刪除舊任務失敗"})
 		return
 	}
-	
+
 	stmt, err := tx.Prepare("INSERT INTO tasks (id, name, start, durationdays, priority, project_id) VALUES ($1, $2, $3, $4, $5, $6)")
 	if err != nil {
 		tx.Rollback()
@@ -342,33 +342,38 @@ func handleSaveTasks(c *gin.Context) {
 
 // 處理 "建立新專案" (已修復使用 RETURNING ID)
 // 處理 "建立新專案" (使用 projectDB) - 最終修正版
+// 處理 "建立新專案" (使用 projectDB) - 最終穩定版
 func handleCreateProject(c *gin.Context) {
 	var req ProjectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "無效的請求: " + err.Error()})
 		return
 	}
-	
-    var newID int
-	// 【修正】: 移除 stmt.Exec 和 LastInsertId，完全使用 QueryRow + RETURNING
+
+	var newID int
+
+	// 1. 使用 QueryRow 執行 INSERT ... RETURNING ID
 	query := "INSERT INTO projects (name, department) VALUES ($1, $2) RETURNING id"
-    
-    // 使用 QueryRow 執行 INSERT，並將返回的 id 掃描到 newID 變數中
+
+	// 執行查詢，傳入名稱和部門，並將返回的 ID 掃描到 newID 變數中
 	err := projectDB.QueryRow(query, req.Name, req.Department).Scan(&newID)
 
 	if err != nil {
-		log.Printf("ERROR: handleCreateProject 執行失敗: %v", err) // 新增日誌
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "資料庫執行失敗: " + err.Error()})
+		log.Printf("ERROR: handleCreateProject 資料庫執行失敗: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "專案創建失敗: " + err.Error()})
 		return
 	}
-    
-	// 成功取得新 ID (此 ID 為 CRDB 分配的唯一 ID)
+
+	// 2. 構建並回傳新專案物件
 	newProject := Project{ID: newID, Name: req.Name, Department: req.Department}
-	
-    // 確認 ID 是有效值後再回傳 (選用，但有助於偵錯)
-    log.Printf("INFO: 成功創建專案 ID: %d", newID) 
+
+	log.Printf("INFO: 成功創建專案 ID: %d", newID)
 	c.JSON(http.StatusCreated, newProject)
 }
+
+// ----------------------------------------------------
+// 提醒：handleCreateUser 已經使用類似 QueryRow 的穩定結構，所以應該是正確的。
+// ----------------------------------------------------
 
 // 處理 "刪除專案" (使用 $1)
 func handleDeleteProject(c *gin.Context) {
@@ -383,7 +388,7 @@ func handleDeleteProject(c *gin.Context) {
 
 // --- 以下為管理員 API Handlers ---
 
-// 處理 "取得所有使用者" 
+// 處理 "取得所有使用者"
 func handleGetUsers(c *gin.Context) {
 	rows, err := userDB.Query("SELECT id, username, name, department, is_admin FROM users")
 	if err != nil {
@@ -409,24 +414,24 @@ func handleCreateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "無效的請求: " + err.Error()})
 		return
 	}
-	
-    var newID int
+
+	var newID int
 	// 使用 INSERT ... RETURNING id
-    query := "INSERT INTO users (username, password, name, department, is_admin) VALUES ($1, $2, $3, $4, $5) RETURNING id"
-    
-    // 使用 QueryRow 執行 INSERT 並將返回的 id 掃描到 newID 變數中
+	query := "INSERT INTO users (username, password, name, department, is_admin) VALUES ($1, $2, $3, $4, $5) RETURNING id"
+
+	// 使用 QueryRow 執行 INSERT 並將返回的 id 掃描到 newID 變數中
 	err := userDB.QueryRow(query, req.Username, req.Password, req.Name, req.Department, req.IsAdmin).Scan(&newID)
 
 	if err != nil {
 		// 檢查唯一性約束錯誤
-		if strings.Contains(err.Error(), "duplicate key value") { 
+		if strings.Contains(err.Error(), "duplicate key value") {
 			c.JSON(http.StatusConflict, gin.H{"error": "此使用者名稱已被註冊"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "資料庫執行失敗: " + err.Error()})
 		return
 	}
-    
+
 	newUser := User{ID: newID, Username: req.Username, Name: req.Name, Department: req.Department, IsAdmin: req.IsAdmin}
 	c.JSON(http.StatusCreated, newUser)
 }
@@ -446,7 +451,7 @@ func handleDeleteUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// 處理 "清除所有資料" 
+// 處理 "清除所有資料"
 func handleClearAllData(c *gin.Context) {
 
 	// 1. 清除 Project DB
@@ -455,14 +460,14 @@ func handleClearAllData(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "無法啟動 projectDB 交易"})
 		return
 	}
-	
+
 	_, err = projectTx.Exec("DELETE FROM tasks")
 	if err != nil {
 		projectTx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "刪除 tasks 失敗"})
 		return
 	}
-	
+
 	_, err = projectTx.Exec("DELETE FROM projects")
 	if err != nil {
 		projectTx.Rollback()
@@ -480,14 +485,14 @@ func handleClearAllData(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "無法啟動 userDB 交易"})
 		return
 	}
-	
+
 	_, err = userTx.Exec("DELETE FROM users")
 	if err != nil {
 		userTx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "刪除 users 失敗"})
 		return
 	}
-	// 重新插入預設的管理員帳號 
+	// 重新插入預設的管理員帳號
 	_, err = userTx.Exec(`
         INSERT INTO users (username, password, name, department, is_admin) 
         VALUES ('admin', 'admin', 'Site Admin', 'IT', 1) 
